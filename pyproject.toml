@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "secpat-recovery"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.30.0",
+    "openai>=1.30.0",
+    "click>=8.1.0",
+    # The interaction-order detector (stage 3) and the drift scorer, each its own
+    # package so every consumer computes the same numbers. Scoring brings
+    # tree-sitter and its five grammars with it — do not pin those here as well.
+    "secpat-interaction-order==0.1.0",
+    "secpat-scoring==0.23.0",
+    "sentence-transformers>=5.0.0",
+    "numpy>=1.26",
+    "regex>=2024.0",
+    "chromadb>=0.6.0",
+    "python-dotenv>=1.0.0",
+    # o200k_base: the baseline's fit guard counts non-Claude prompts with it.
+    "tiktoken>=0.13.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.4"]
+
+[project.scripts]
+secpat = "secpat_recovery.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/secpat_recovery"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
