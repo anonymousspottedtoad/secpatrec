@@ -21,6 +21,100 @@ def cli() -> None:
     """Security pattern recovery engine."""
 
 
+def _split(ctx, param, values: tuple[str, ...]) -> tuple[str, ...]:
+    """Repeatable options that also take comma-separated lists."""
+    return tuple(v.strip() for value in values for v in value.split(",") if v.strip())
+
+
+def _experiment_options(groundtruth: bool = True, recoveries: bool = True):
+    """The options that pick the experiments and name each part of the dataset.
+
+    Every part is a flag of its own, and the experiments require each one they
+    use: nothing is read from a default location.
+    """
+    folder = click.Path(exists=True, file_okay=False, path_type=Path)
+    options = [
+        click.option("--models", multiple=True, callback=_split, metavar="NAME",
+                     help="Experiments: a model from experiments/config.toml "
+                          "(gpt-6.1-sol, deepseek-v4-flash-0731, glm-5.3-flash, "
+                          "muse-spark-1.3-contributor). Repeat for several."),
+        click.option("--experiments", multiple=True, callback=_split, metavar="NAME",
+                     help="Experiments: pipeline, baseline, ablation_no_grep, "
+                          "ablation_no_search, or all. Repeat for several. Default: pipeline."),
+        click.option("--repo", "repos", multiple=True, callback=_split,
+                     help="Only this repo (exact name). Repeat for several."),
+        click.option("--pattern", "patterns", multiple=True, callback=_split,
+                     help="Only this pattern (exact name). Repeat for several."),
+        click.option("--manifests", multiple=True,
+                     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+                     help="Experiments: a manifest of records to run (pattern, repo, "
+                          "language). Repeat for several."),
+        *([click.option("--groundtruth-path", "groundtruth_path", type=folder,
+                        help="Experiments: the ground truth, "
+                             "<language>/<pattern>__<repo>.json.")]
+          if groundtruth else []),
+        click.option("--cpg-path", type=click.Path(file_okay=False, path_type=Path),
+                     help="Experiments: the CPGs, <repo>__<JAVASRC|PYTHONSRC>.cpg. A repo "
+                          "with no CPG there gets one built there by joern-parse."),
+        click.option("--repos-path", type=folder,
+                     help="Experiments: the codebases, <language>/<repo>/."),
+        click.option("--patterns-path", type=folder,
+                     help="Experiments: the security patterns, <pattern>/04_pattern.json."),
+        *([click.option("--recoveries-path", type=folder,
+                        help="Experiments: the stored recoveries to score, "
+                             "<experiment>/<model>/<language>/<pattern>__<repo>/"
+                             "recovery.json.")]
+          if recoveries else []),
+    ]
+
+    def decorate(f):
+        for option in reversed(options):
+            f = option(f)
+        return f
+
+    return decorate
+
+
+def _run_experiments(mode: str, **kw) -> None:
+    from types import SimpleNamespace
+
+    from .experiments import runner
+
+    required = {
+        "--manifests": kw["manifests"],
+        "--groundtruth-path": kw["groundtruth_path"],
+        "--cpg-path": kw["cpg_path"],
+        "--repos-path": kw["repos_path"],
+        "--patterns-path": kw["patterns_path"],
+    }
+    if mode in ("evaluate", "interaction"):
+        required["--recoveries-path"] = kw["recoveries_path"]
+    missing = [flag for flag, value in required.items() if not value]
+    if missing:
+        raise click.UsageError(
+            f"name every part of the dataset the experiments use; missing: {', '.join(missing)}"
+        )
+    opts = SimpleNamespace(
+        mode=mode,
+        models=kw["models"],
+        experiments=kw["experiments"] or ("pipeline",),
+        repos=kw["repos"],
+        patterns=kw["patterns"],
+        manifests=list(kw["manifests"]),
+        groundtruth_path=kw["groundtruth_path"],
+        cpg_path=kw["cpg_path"],
+        repos_path=kw["repos_path"],
+        patterns_path=kw["patterns_path"],
+        recoveries_path=kw["recoveries_path"],
+        output=kw["output_dir"],
+        dry_run=kw["dry_run"],
+    )
+    try:
+        raise SystemExit(runner.run(opts))
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 @cli.command("recover")
 @click.argument(
     "codebase_path",
@@ -31,7 +125,7 @@ def cli() -> None:
     "--pattern-file",
     "-p",
     type=click.Path(exists=True, path_type=Path),
-    help="Path to the pattern: a crawler 04_pattern.json, or a raw Mermaid .mmd/.md file.",
+    help="Path to the pattern: a 04_pattern.json, or a raw Mermaid .mmd/.md file.",
 )
 @click.option(
     "--output-dir",
@@ -50,13 +144,6 @@ def cli() -> None:
     type=click.Path(path_type=Path),
     help="Batch: the folder the records' runs are written into (required with --manifest-path).",
 )
-@click.option(
-    "--parallel",
-    type=click.IntRange(min=1),
-    default=None,
-    metavar="N",
-    help="Batch: records run at once (default: this provider's entry in SECPAT_PARALLEL, else 1).",
-)
 @click.option("--only", multiple=True, help="Batch: only records matching this substring.")
 @click.option("--skip", multiple=True, help="Batch: drop records matching this substring.")
 @click.option(
@@ -70,7 +157,7 @@ def cli() -> None:
     type=float,
     default=0,
     show_default=True,
-    help="Batch: seconds between run launches.",
+    help="Batch: seconds to pause after each run.",
 )
 @click.option("--dry-run", is_flag=True, default=False, help="Batch: print the plan, run nothing.")
 @click.option(
@@ -141,6 +228,7 @@ def cli() -> None:
         "canonical prompt is never rewritten to run an experiment."
     ),
 )
+@_experiment_options(recoveries=False)
 @click.option("-v", "--verbose", is_flag=True, default=False, help="Debug-level logging.")
 def recover(
     codebase_path: Path | None,
@@ -148,7 +236,6 @@ def recover(
     output_dir: Path,
     manifest_path: Path | None,
     batch_path: Path | None,
-    parallel: int | None,
     only: tuple[str, ...],
     skip: tuple[str, ...],
     kb_root: Path | None,
@@ -164,15 +251,40 @@ def recover(
     language: str | None,
     disabled_tools: tuple[str, ...],
     system_prompt_file: Path | None,
+    models: tuple[str, ...],
+    experiments: tuple[str, ...],
+    repos: tuple[str, ...],
+    patterns: tuple[str, ...],
+    manifests: tuple[Path, ...],
+    groundtruth_path: Path | None,
+    cpg_path: Path | None,
+    repos_path: Path | None,
+    patterns_path: Path | None,
     verbose: bool,
 ) -> None:
     """Recover a security pattern implementation from a codebase.
 
     Give a codebase and --pattern-file for one repo, or --manifest-path and
     --batch-path to run every record of a manifest, each as its own run of this
-    command, --parallel at a time.
+    command, one after another.
+
+    With --models, run the paper's experiments on the dataset instead: each
+    selected experiment (pipeline, baseline, ablation arms) with each model, every
+    batch scored and summarised in <output-dir>/index.html.
     """
     from .pattern_input import load_pattern, parse_pattern
+
+    if models:
+        if codebase_path or manifest_path:
+            raise click.UsageError(
+                "--models runs the experiments on the dataset; leave out the codebase "
+                "and --manifest-path"
+            )
+        _run_experiments("recover", models=models, experiments=experiments,
+                         repos=repos, patterns=patterns, manifests=manifests,
+                         groundtruth_path=groundtruth_path, cpg_path=cpg_path,
+                         repos_path=repos_path, patterns_path=patterns_path,
+                         recoveries_path=None, output_dir=output_dir, dry_run=dry_run)
 
     if manifest_path:
         if not batch_path:
@@ -195,14 +307,13 @@ def recover(
                     system_prompt_file=system_prompt_file,
                     only=list(only),
                     skip=list(skip),
-                    parallel=parallel,
                     sleep=sleep,
                     dry_run=dry_run,
                 )
             )
         )
     if not codebase_path or not pattern_file:
-        raise click.UsageError("give a codebase and --pattern-file, or --manifest-path")
+        raise click.UsageError("give a codebase and --pattern-file, --manifest-path, or --models")
 
     # A Joern export blocks for minutes with no output of its own; the runner logs
     # its progress at INFO, so the run is silent without this.
@@ -340,19 +451,6 @@ def _echo_interaction_order(order: dict) -> None:
     "--model", default=None, help="Model tag within the provider (default: the provider's own)."
 )
 @click.option(
-    "--thinking",
-    is_flag=True,
-    default=False,
-    help="Claude only: adaptive thinking (note Opus 5 thinks by default).",
-)
-@click.option(
-    "--effort",
-    default="high",
-    type=click.Choice(["low", "medium", "high", "xhigh", "max"]),
-    show_default=True,
-    help="Claude only, with --thinking.",
-)
-@click.option(
     "--max-tokens",
     type=int,
     default=MAX_TOKENS,
@@ -386,8 +484,6 @@ def baseline(
     smallest: int | None,
     provider: str,
     model: str | None,
-    thinking: bool,
-    effort: str,
     max_tokens: int,
     max_input_tokens: int,
     all_text: bool,
@@ -403,8 +499,6 @@ def baseline(
     options = dict(
         provider_name=provider,
         model=model,
-        thinking=thinking,
-        effort=effort,
         all_text=all_text,
         max_file_bytes=max_file_bytes,
         max_input_tokens=max_input_tokens,
@@ -462,11 +556,11 @@ def baseline(
 @click.option(
     "--groundtruth-path",
     "-g",
-    required=True,
     type=click.Path(exists=True, path_type=Path),
     help=(
         "The ground truth: a role-mapping file (same schema as recovery.json) for one "
-        "repo, or the snapshot folder (<pattern>__<repo>.json per record) for a batch."
+        "repo, the snapshot folder (<pattern>__<repo>.json per record) for a batch, or "
+        "for the experiments the folder holding <language>/<pattern>__<repo>.json."
     ),
 )
 @click.option(
@@ -502,13 +596,13 @@ def baseline(
 )
 @click.option(
     "--output-dir",
-    default="./eval/results",
+    default=None,
     type=click.Path(path_type=Path),
-    show_default=True,
-    help="Directory where the evaluation report is written.",
+    help="Where the report is written (default: ./eval/results for one repo, "
+    "./output for the experiments).",
 )
 @click.option(
-    "--pattern",
+    "--pattern-file",
     "pattern_path",
     default=None,
     type=click.Path(exists=True, path_type=Path),
@@ -524,18 +618,32 @@ def baseline(
     default=False,
     help="Skip Level 3 — the same switch `secpat recover` has for its own stage 3.",
 )
+@_experiment_options(groundtruth=False)
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Experiments: print the plan, run nothing."
+)
 def evaluate(
     codebase_path: Path | None,
     prediction: Path | None,
-    groundtruth_path: Path,
+    groundtruth_path: Path | None,
     manifest_path: Path | None,
     batch_path: Path | None,
     recovery_order: str,
     out: Path | None,
     kb_dir: Path,
-    output_dir: Path,
+    output_dir: Path | None,
     pattern_path: Path | None,
     no_order: bool,
+    models: tuple[str, ...],
+    experiments: tuple[str, ...],
+    repos: tuple[str, ...],
+    patterns: tuple[str, ...],
+    manifests: tuple[Path, ...],
+    cpg_path: Path | None,
+    repos_path: Path | None,
+    patterns_path: Path | None,
+    recoveries_path: Path | None,
+    dry_run: bool,
 ) -> None:
     """Score a recovery against a ground-truth mapping, at every level.
 
@@ -544,7 +652,7 @@ def evaluate(
     recovery drift when it was really implementation drift.
 
     Levels 1 and 2 need only ``struct.json``. Level 3 additionally needs the
-    pattern's behaviour walkthrough (``--pattern``) and a call graph, both built
+    pattern's behaviour walkthrough (``--pattern-file``) and a call graph, both built
     from ``codebase_path`` by the same ``secpat_interaction_order.detect``
     ``secpat recover`` derives its own stage 3 with — so this scores an order
     against one produced by an identically configured walk. Without the pattern,
@@ -554,8 +662,29 @@ def evaluate(
     With --manifest-path and --batch-path it scores a whole batch instead, each
     record against its role mapping in the ground-truth snapshot --groundtruth-path
     names.
+
+    With neither a codebase, --prediction nor --manifest-path, it scores the
+    dataset's stored recoveries (the paper's experiment outputs) again, batch by
+    batch, and summarises them in <output-dir>/index.html. No model is called.
     """
     import json as _json
+
+    if not (codebase_path or prediction or manifest_path):
+        _run_experiments("evaluate", models=models, experiments=experiments,
+                         repos=repos, patterns=patterns, manifests=manifests,
+                         groundtruth_path=groundtruth_path, cpg_path=cpg_path,
+                         repos_path=repos_path, patterns_path=patterns_path,
+                         recoveries_path=recoveries_path,
+                         output_dir=output_dir or Path("./output"),
+                         dry_run=dry_run)
+    if models:
+        raise click.UsageError(
+            "--models scores the dataset's recoveries; leave out the codebase, "
+            "--prediction and --manifest-path"
+        )
+    if not groundtruth_path:
+        raise click.UsageError("--groundtruth-path is required to score a recovery or a batch")
+    output_dir = output_dir or Path("./eval/results")
 
     if manifest_path:
         if not batch_path:
@@ -659,152 +788,93 @@ def evaluate(
         click.echo(line)
 
 
-@cli.command("extract")
+@cli.command("interaction")
 @click.option(
-    "--url",
-    "urls",
-    multiple=True,
-    help="Pattern page URL to crawl (repeatable).",
+    "--manifest-path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="One batch: derive the order for every record of this manifest (with --batch-path).",
 )
 @click.option(
-    "--slug",
-    "slugs",
-    multiple=True,
-    help="Pattern name slug to crawl, e.g. obscure_token_based_access_control (repeatable).",
+    "--batch-path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="One batch: the folder holding the records' recovery.json files.",
 )
+@_experiment_options()
 @click.option(
-    "--config",
-    "config_file",
-    default=None,
-    type=click.Path(exists=True, path_type=Path),
-    help="JSON config listing urls/slugs to crawl.",
-)
-@click.option(
-    "--random",
-    "pick_random",
-    is_flag=True,
-    default=False,
-    help="Crawl one random pattern from the catalogue.",
-)
-@click.option(
-    "--page-dir",
-    default="./security_patterns",
+    "--output-dir",
+    default="./output",
     type=click.Path(path_type=Path),
     show_default=True,
-    help="Directory where each pattern's reference-page folder is written.",
+    help="Experiments: the folder every run writes into.",
 )
 @click.option(
-    "-v",
-    "--verbose",
-    is_flag=True,
-    default=False,
-    help="Verbose logging (per-step timings at DEBUG level).",
+    "--dry-run", is_flag=True, default=False, help="Experiments: print the plan, run nothing."
 )
-def extract(
-    urls: tuple[str, ...],
-    slugs: tuple[str, ...],
-    config_file: Path | None,
-    pick_random: bool,
-    page_dir: Path,
-    verbose: bool,
+def interaction(
+    manifest_path: Path | None,
+    batch_path: Path | None,
+    models: tuple[str, ...],
+    experiments: tuple[str, ...],
+    repos: tuple[str, ...],
+    patterns: tuple[str, ...],
+    manifests: tuple[Path, ...],
+    groundtruth_path: Path | None,
+    cpg_path: Path | None,
+    repos_path: Path | None,
+    patterns_path: Path | None,
+    recoveries_path: Path | None,
+    output_dir: Path,
+    dry_run: bool,
 ) -> None:
-    """Crawl DistriNet security-pattern pages into per-pattern reference folders.
+    """Derive the interaction order from existing role mappings, and score it.
 
-    Each pattern is read once by gpt-6-sol vision (diagram → Mermaid) and
-    synthesised by gpt-6-sol (reasoning) into 04_pattern.json — the structured
-    pattern consumed by `secpat recover`.
+    By default, runs on the dataset's stored recoveries (the paper's experiment
+    outputs): each recovery's interaction order is derived from its role mapping
+    (stage 3 of the pipeline), then every batch is scored against the ground truth
+    and summarised in <output-dir>/index.html. No model is called.
+
+    With --manifest-path and --batch-path, derives the order for one batch of
+    recovery.json files instead, and writes it into each of them.
     """
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    # The HTTP client logs every request at INFO — too noisy for step tracing.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
+    if manifest_path or batch_path:
+        if not (manifest_path and batch_path):
+            raise click.UsageError("--manifest-path and --batch-path go together")
+        from .experiments.dataset import derive_orders
 
-    from .crawler import CrawlerConfig, PatternCrawler, resolve_urls
-    from .crawler.config import random_slug
-
-    all_urls: list[str] = []
-    if config_file is not None:
-        cfg = CrawlerConfig.from_file(config_file)
-        all_urls.extend(cfg.resolve_urls())
-
-    extra = resolve_urls(list(urls), list(slugs)) if (urls or slugs) else []
-    all_urls.extend(extra)
-
-    if pick_random:
-        slug = random_slug()
-        click.echo(f"Random pattern selected: {slug}")
-        all_urls.extend(resolve_urls(slugs=[slug]))
-
-    # de-dup preserving order
-    seen: set[str] = set()
-    all_urls = [u for u in all_urls if not (u in seen or seen.add(u))]
-
-    if not all_urls:
-        raise click.UsageError(
-            "No patterns to crawl. Provide --url, --slug, --config, or --random."
-        )
-
-    crawler = PatternCrawler(page_dir=page_dir)
-
-    for url in all_urls:
-        click.echo(f"\nCrawling: {url}")
-        result = crawler.crawl_url(url)
-        has = "yes" if result.has_diagram else "no"
-        subflows = len(result.diagram_subflows)
-        click.echo(f"  diagram: {has}  sub-flows: {subflows}  links: {result.link_count}")
-        click.echo(
-            f"  pages:   {result.page_dir}/  (01_text, 02_diagram, 03_subflows, 04_pattern.json)"
-        )
+        records = [
+            r for r in load_records(manifest_path)
+            if (not repos or r["repo"] in repos) and (not patterns or r["pattern"] in patterns)
+        ]
+        click.echo(f"{len(records)} record(s): interaction order in {batch_path}")
+        raise SystemExit(derive_orders(records, batch_path))
+    _run_experiments("interaction", models=models, experiments=experiments,
+                     repos=repos, patterns=patterns, manifests=manifests,
+                     groundtruth_path=groundtruth_path, cpg_path=cpg_path,
+                     repos_path=repos_path, patterns_path=patterns_path,
+                     recoveries_path=recoveries_path, output_dir=output_dir, dry_run=dry_run)
 
 
-# ── the ablation, the pack ──────────────────────────────────────────
-# These commands wrap tools that parse their own arguments (argparse). Everything
-# after the command name, --help included, is handed to the tool untouched, so
-# each keeps its own flags and its own help text.
+@cli.command("report")
+@click.option(
+    "--output-dir",
+    default="./output",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    show_default=True,
+    help="The experiments' output folder.",
+)
+def report(output_dir: Path) -> None:
+    """Rebuild <output-dir>/index.html from the experiments' scores."""
+    from .experiments import report as experiments_report
+
+    click.echo(f"Written: {experiments_report.build(output_dir)}")
+
+
+# ── the pack ─────────────────────────────────────────────────────────
+# `pack` wraps a tool that parses its own arguments (argparse). Everything after
+# the command name, --help included, is handed to it untouched, so it keeps its
+# own flags and its own help text.
 
 _PASS_THROUGH = dict(ignore_unknown_options=True, allow_extra_args=True)
-
-
-@cli.group("ablation")
-def ablation() -> None:
-    """The tool ablation: run the arms, (re)write their prompts, compare them."""
-
-
-@ablation.command("run", context_settings=_PASS_THROUGH, add_help_option=False)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def ablation_run(args: tuple[str, ...]) -> None:
-    """Run one manifest once per arm, score the arms and the control, compare them."""
-    import os
-    import subprocess
-    import sys
-
-    script = Path(__file__).resolve().parent / "ablation" / "run.sh"
-    # The script runs its Python steps on this interpreter, the one with the
-    # package installed, unless PYTHON says otherwise.
-    env = {**os.environ, "PYTHON": os.environ.get("PYTHON", sys.executable)}
-    raise SystemExit(subprocess.call(["bash", str(script), *args], env=env))
-
-
-@ablation.command("prompts", context_settings=_PASS_THROUGH, add_help_option=False)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def ablation_prompts(args: tuple[str, ...]) -> None:
-    """Write each arm's copy of the system prompt; --check verifies them."""
-    from .ablation import generate_prompts
-
-    raise SystemExit(generate_prompts.main(list(args), prog="secpat ablation prompts"))
-
-
-@ablation.command("report", context_settings=_PASS_THROUGH, add_help_option=False)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def ablation_report(args: tuple[str, ...]) -> None:
-    """Put an ablation's arms side by side: scores and agent behaviour."""
-    from .ablation import report
-
-    raise SystemExit(report.main(list(args), prog="secpat ablation report"))
 
 
 @cli.command("pack", context_settings=_PASS_THROUGH, add_help_option=False)

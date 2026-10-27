@@ -5,6 +5,10 @@ accepted too). Each record names its ``codebase_path`` and ``pattern_file``
 **relative to the manifest's own folder**, so a manifest and the files it lists
 move together — copy the folder anywhere and the paths still resolve.
 
+A record that leaves either path out — the dataset's manifests name only
+``pattern``, ``repo`` and ``language`` — gets it from the dataset's layout
+(``DATASET_LAYOUT``), again beside the manifest.
+
 :func:`load_records` is the one reader. It returns each record with those two
 paths made absolute, so nothing downstream needs to know where the manifest was.
 """
@@ -18,6 +22,12 @@ from pathlib import Path
 
 #: The record fields that are paths, relative to the manifest's folder.
 PATH_FIELDS = ("codebase_path", "pattern_file")
+
+#: Where a record's files are in the dataset, for a record that leaves them out.
+DATASET_LAYOUT = {
+    "codebase_path": "codebase/repos/{language}/{repo}",
+    "pattern_file": "security_patterns/{pattern}/04_pattern.json",
+}
 
 
 def load_records(
@@ -36,8 +46,8 @@ def load_records(
     for run in runs:
         rec = dict(run)
         for field in PATH_FIELDS:
-            if rec.get(field):
-                rec[field] = os.path.normpath(base / rec[field])
+            rel = rec.get(field) or DATASET_LAYOUT[field].format(**rec)
+            rec[field] = os.path.normpath(base / rel)
         records.append(rec)
 
     only, skip = [n.lower() for n in only], [n.lower() for n in skip]

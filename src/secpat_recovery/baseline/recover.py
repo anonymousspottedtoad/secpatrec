@@ -14,7 +14,7 @@ from pathlib import Path
 import tiktoken
 
 from ..llm import make_agent
-from .pack import Counter, build_pack, iter_files
+from .pack import build_pack, iter_files
 
 # Provider credentials come from the repo's .env, loaded by this package's
 # `__init__` before anything here runs — the same .env `secpat recover` reads.
@@ -147,17 +147,14 @@ def build_prompt(pattern_json: str, pack_text: str) -> str:
     return f"<pattern>\n{pattern_json}\n</pattern>\n\n<repository>\n{pack_text}\n</repository>"
 
 
-def prompt_tokens(prompt: str, provider_name: str, model: str) -> tuple[int, bool]:
+def prompt_tokens(prompt: str, provider_name: str) -> tuple[int, bool]:
     """`(tokens, exact)` for the pre-flight budget check.
 
-    Claude is counted exactly through the (free) `count_tokens` endpoint. Every
-    other provider is counted with GPT's `o200k_base`, the one base tokenizer
+    Every provider is counted with GPT's `o200k_base`, the one base tokenizer
     the fit guard uses: exact for `openai` (it matches GPT-6.1-sol's billed
     input to within 0.4%), an estimate for the rest, which publish no tokenizer
     (Muse) or are not counted with their own (DeepSeek, GLM).
     """
-    if provider_name == "claude":
-        return Counter(model=model).count(prompt)
     tokens = len(tiktoken.get_encoding("o200k_base").encode(prompt, disallowed_special=()))
     return tokens, provider_name == "openai"
 
@@ -168,24 +165,20 @@ def recover(
     *,
     provider_name: str,
     model: str | None,
-    thinking: bool,
-    effort: str,
     all_text: bool,
     max_file_bytes: int,
     max_input_tokens: int,
     max_tokens: int,
 ) -> dict:
     """Pack the repo, make one call, return the run record."""
-    provider = make_agent(
-        provider_name, model=model, thinking=thinking, effort=effort, max_tokens=max_tokens
-    )
+    provider = make_agent(provider_name, model=model, max_tokens=max_tokens)
 
     pack = build_pack(
         codebase, all_text=all_text, line_numbers=False, max_file_bytes=max_file_bytes
     )
     prompt = build_prompt(pattern_file.read_text(encoding="utf-8"), pack.text)
 
-    tokens, exact = prompt_tokens(SYSTEM + prompt, provider_name, provider.model_id)
+    tokens, exact = prompt_tokens(SYSTEM + prompt, provider_name)
     if tokens > max_input_tokens:
         raise ValueError(
             f"pack is {tokens:,}{'' if exact else ' (estimated)'} tokens, over the "
@@ -203,8 +196,6 @@ def recover(
         "baseline": {
             "provider": provider_name,
             "model": provider.model_id,
-            "thinking": thinking,
-            "effort": effort if thinking else "",
             "codebase": str(codebase),
             "pattern_file": str(pattern_file),
             "pack_files": pack.files,
@@ -229,7 +220,8 @@ def write_run(out_dir: Path, result: dict) -> None:
 #: Chars per token, measured over the 30 annotated repos (2.5–2.9 across the set).
 #: Only ever used for planning — a run counts its own prompt exactly before sending.
 _CHARS_PER_TOKEN = 2.8
-#: Claude Opus 5 list price, USD per input token.
+#: A reference list price (Claude Opus 5's), USD per input token: the dry run's
+#: rough cost column, the same for every provider.
 _INPUT_USD = 5 / 1_000_000
 
 

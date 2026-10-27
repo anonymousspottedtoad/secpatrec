@@ -1,0 +1,31 @@
+# The four models of the paper, as `secpat recover --models` calls them.
+#
+#   provider  secpat --provider
+#   model     secpat --model: the tag the runs recorded
+#   needs     settings that must be set (environment or .env) before the model is called
+#   base_url  (self-hosted) the .env setting holding the endpoint, passed to
+#             secpat as LLM_BASE_URL
+#
+# Keys never go in this file: put them in the repo's .env (see .env.example).
+
+[models."gpt-6.1-sol"]
+provider = "openai"
+model = "gpt-6.1-sol"
+needs = ["OPENAI_API_KEY"]
+
+[models."deepseek-v4-flash-0731"]
+provider = "deepseek"
+model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+needs = ["DEEPSEEK_BASE_URL", "MODAL_KEY", "MODAL_SECRET"]
+base_url = "DEEPSEEK_BASE_URL"
+
+[models."glm-5.3-flash"]
+provider = "glm"
+model = "zai-org/GLM-5.3-Flash"
+needs = ["GLM_BASE_URL", "MODAL_KEY", "MODAL_SECRET"]
+base_url = "GLM_BASE_URL"
+
+[models."muse-spark-1.3-contributor"]
+provider = "muse"
+model = "muse-spark-1.3-contributor"
+needs = ["MUSE_API_KEY"]

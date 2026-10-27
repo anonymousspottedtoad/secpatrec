@@ -4,35 +4,30 @@ import os
 
 from .base import LLMProvider, ToolResponse, ToolUse
 
-# Self-hosted model families, each selectable as its own `--provider`, mapped to
-# the model tag used when `--model` is not given. Adding a model to the study is
-# a row here — the CLI's provider choices are read straight off this map. Kept in
-# this module (not `self_hosted`) so listing the names costs no import.
+# Self-hosted models, each selectable as its own `--provider`, mapped to the
+# model tag used when `--model` is not given. Each has its own provider module
+# holding its own endpoint. Kept in this module so listing the names costs no
+# import.
 SELF_HOSTED_MODELS: dict[str, str] = {
-    "qwen": "Qwen/Qwen3.6-35B-A3B",
-    "devstral": "devstral:24b",
-    "gpt-oss": "gpt-oss:20b",
     "deepseek": "deepseek-ai/DeepSeek-V4-Flash-0731",
     "glm": "zai-org/GLM-5.3-Flash",
 }
 
-PROVIDERS: list[str] = ["claude", "openai", "muse", *SELF_HOSTED_MODELS]
+PROVIDERS: list[str] = ["openai", "muse", *SELF_HOSTED_MODELS]
 
 #: Reasoning effort of every `--provider openai` call. gpt-6.1-sol has no "none"
 #: (its lowest is "low"), so every OpenAI run reasons; this fixes how much.
 OPENAI_REASONING_EFFORT = "medium"
 
 #: Reasoning effort of every `--provider glm` call. GLM keeps its thinking, so
-#: this is fixed here rather than read from LLM_REASONING_EFFORT, whose "none"
-#: is the other self-hosted models' setting. The GLM endpoint has no "medium".
+#: this is fixed here rather than read from LLM_REASONING_EFFORT, which DeepSeek
+#: reads. The GLM endpoint has no "medium".
 GLM_REASONING_EFFORT = "low"
 
 
 def make_agent(
     name: str,
     model: str | None = None,
-    thinking: bool = False,
-    effort: str = "high",
     max_tokens: int | None = None,
 ) -> LLMProvider:
     """Build the LLM agent (provider) that backs a reasoning/vision task.
@@ -44,20 +39,14 @@ def make_agent(
     alongside it. Omitted, each provider's own default stands.
     """
     cap = {"max_tokens": max_tokens} if max_tokens else {}
-    if name == "claude":
-        from .claude import ClaudeProvider
-
-        return ClaudeProvider(
-            model=model or "claude-opus-4-8", thinking=thinking, effort=effort, **cap
-        )
     if name == "openai":
         from .openai import OpenAIProvider
 
         # gpt-6.1-sol for both text/reasoning and image (vision) tasks, at a
         # fixed OPENAI_REASONING_EFFORT. LLM_REASONING_EFFORT is the self-hosted
-        # models' knob (its "none" turns Qwen's thinking off) and is not read
-        # here: gpt-6.1-sol rejects "none", and the effort a run used must not
-        # depend on a setting meant for another provider.
+        # models' knob and is not read here: gpt-6.1-sol rejects "none", and the
+        # effort a run used must not depend on a setting meant for another
+        # provider.
         return OpenAIProvider(
             model=model or "gpt-6.1-sol",
             vision_model="gpt-6.1-sol",
@@ -71,16 +60,13 @@ def make_agent(
         # sampling settings in `muse.py`. MUSE_API_KEY authenticates it.
         return MuseProvider(model=model or "muse-spark-1.3-contributor", **cap)
     if name in SELF_HOSTED_MODELS:
-        # A self-hosted model family, served on Modal by default. `--model`
-        # overrides the family's default tag; LLM_BASE_URL points at another
-        # serving runtime (e.g. Ollama on localhost). DeepSeek and GLM each have
-        # their own copy of the provider, holding their own endpoint.
+        # A self-hosted model, on its own OpenAI-compatible endpoint (LLM_BASE_URL;
+        # a Modal-hosted vLLM server in the paper's runs). `--model` overrides its
+        # default tag.
         if name == "deepseek":
             from .deepseek import DeepSeekProvider as provider_cls
-        elif name == "glm":
-            from .glm import GlmProvider as provider_cls
         else:
-            from .self_hosted import SelfHostedProvider as provider_cls
+            from .glm import GlmProvider as provider_cls
 
         num_ctx = os.getenv("LLM_NUM_CTX")
         return provider_cls(

@@ -4,16 +4,7 @@
 A manifest lists repo × pattern records (``runs``, each with ``codebase_path`` and
 ``pattern_file`` relative to the manifest's own folder — see
 ``secpat_recovery.manifest``). Each record runs ``secpat recover`` in a subprocess
-of its own, into one batch folder.
-
-**How many run at once is per provider.** ``SECPAT_PARALLEL`` in ``.env`` sets it
-for every provider in one place — ``SECPAT_PARALLEL=openai=4,claude=2,muse=8,qwen=4``
-— and a provider it does not name runs one record at a time. ``--parallel N``
-overrides it for one batch. Hosted providers bill against a per-account token
-quota, so past some width more runs in flight only means more 429s; the client
-waits each one out and retries (``llm/rate_limit.py``), so a too-wide setting is
-slower, not lost. Self-hosted servers batch concurrent requests themselves, so
-there width is close to an N-fold throughput win.
+of its own, into one batch folder, one record at a time in manifest order.
 
 Each record gets its own subfolder in ``--batch-path``, holding that run's
 ``recovery.json``, ``transcript.md`` and the raw CLI log::
@@ -41,7 +32,6 @@ resume a batch, pass a manifest of the records still pending.
 
 Usage (paths relative to where you run it):
     secpat recover --manifest-path <manifest.json> --batch-path <batch folder> --provider openai
-    ... --parallel 4
     ... --only <substring> --only <substring>
     ... --disable-tool grep --system-prompt-file src/secpat_recovery/ablation/prompts/no-grep.md
     ... --dry-run
@@ -50,14 +40,10 @@ Usage (paths relative to where you run it):
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -85,79 +71,6 @@ def check_inputs(rec: dict) -> str | None:
     if not codebase.is_dir():
         return f"codebase not found: {rec['codebase_path']}"
     return None
-
-
-# --------------------------------------------------------------------------
-# parallel runs
-# --------------------------------------------------------------------------
-
-
-def parallel_for(provider: str) -> int:
-    """How many records run at once on ``provider``, from ``SECPAT_PARALLEL``.
-
-    ``SECPAT_PARALLEL=openai=4,claude=2,muse=8`` — one entry per provider; one
-    the setting does not name runs a record at a time.
-    """
-    for entry in os.getenv("SECPAT_PARALLEL", "").split(","):
-        name, _, width = entry.partition("=")
-        if name.strip() == provider and width.strip():
-            return int(width)
-    return 1
-
-_print_lock = threading.Lock()
-
-
-def say(*parts: str) -> None:
-    """Print without interleaving two workers' lines mid-sentence."""
-    with _print_lock:
-        print(*parts, flush=True)
-
-
-class KBLocks:
-    """One lock per KB directory, so no two runs share a knowledge base.
-
-    Records are keyed by repo and each repo gets its own ``.kb-batch/<repo>/``,
-    so distinct repos never contend and a fully-distinct manifest runs at full
-    width. Two records on the *same* repo are a different matter: ``build_kb``
-    is not atomic and a ChromaDB collection is a sqlite file, so a concurrent
-    first-run pair would race to create the same index and leave it in the
-    half-built state ``drop_half_built_kb`` exists to clean up after. Holding
-    the lock for the whole run — not just the build — keeps that impossible
-    without the parent having to see inside the subprocess.
-    """
-
-    def __init__(self) -> None:
-        self._locks: dict[Path, threading.Lock] = defaultdict(threading.Lock)
-        self._guard = threading.Lock()
-
-    def get(self, kb_dir: Path) -> threading.Lock:
-        with self._guard:
-            return self._locks[kb_dir]
-
-
-class Stagger:
-    """Space consecutive run *launches* by at least ``--sleep`` seconds.
-
-    Parallel runs only. It stops N workers hitting a cold server — or starting N
-    KB builds — at the same instant. Sequentially ``--sleep`` keeps its original
-    meaning of a pause *after* each run (real rate-limit headroom, which a
-    minimum launch spacing would not give: a gap shorter than the run itself
-    elapses while the run is still going and never pauses anything).
-    """
-
-    def __init__(self, seconds: float) -> None:
-        self._seconds = seconds
-        self._lock = threading.Lock()
-        self._last = 0.0
-
-    def wait(self) -> None:
-        if not self._seconds:
-            return
-        with self._lock:
-            delay = self._last + self._seconds - time.monotonic()
-            if delay > 0:
-                time.sleep(delay)
-            self._last = time.monotonic()
 
 
 # --------------------------------------------------------------------------
@@ -193,7 +106,7 @@ def run_one(rec: dict, run_dir: Path, kb_dir: Path, args) -> dict:
     """Run the recovery CLI for one record. Returns a result dict."""
     run_dir.mkdir(parents=True, exist_ok=True)
     if drop_half_built_kb(kb_dir):
-        say(f"    (discarded half-built KB at {kb_dir.name}, rebuilding)")
+        print(f"    (discarded half-built KB at {kb_dir.name}, rebuilding)", flush=True)
 
     cmd = [
         sys.executable, "-m", "secpat_recovery.cli", "recover",
@@ -249,7 +162,7 @@ def run_one(rec: dict, run_dir: Path, kb_dir: Path, args) -> dict:
     order = recovered.get("interaction_order") or {}
     result["interactions"] = len(order.get("interactions", [])) if order.get("available") else None
     if order and not order.get("available"):
-        say(f"    note: no interaction order — {order.get('reason', '')}")
+        print(f"    note: no interaction order — {order.get('reason', '')}", flush=True)
     statuses = {m.get("status", "missing") for m in mappings}
     result["badge"] = (
         "UNKNOWN" if not statuses
@@ -289,7 +202,6 @@ def write_batch_config(batch_dir: Path, args, records: list[dict]) -> None:
                 "disabled_tools": list(args.disable_tool),
                 "system_prompt_file": str(args.system_prompt_file or "") or None,
                 "ablation": bool(args.disable_tool),
-                "parallel": args.parallel,
                 "records": [slug(r) for r in records],
             },
             indent=2,
@@ -299,44 +211,26 @@ def write_batch_config(batch_dir: Path, args, records: list[dict]) -> None:
     )
 
 
-def run_record(
-    n: int,
-    total: int,
-    rec: dict,
-    batch_dir: Path,
-    kb_root: Path,
-    args,
-    kb_locks: KBLocks,
-    stagger: Stagger,
-) -> dict:
-    """Run one record, then report it. Safe to call from several threads."""
+def run_record(n: int, total: int, rec: dict, batch_dir: Path, kb_root: Path, args) -> dict:
+    """Run one record, then report it."""
     name = slug(rec)
     run_dir = batch_dir / name
     kb_dir = kb_root / rec["repo"]
 
-    stagger.wait()
-    lock = kb_locks.get(kb_dir)
-    if not lock.acquire(blocking=False):
-        # Another record on this repo holds the KB; say so rather than
-        # announcing a start that has not happened.
-        say(f"    [{n}/{total}] {name}: waiting for {kb_dir.name}'s KB")
-        lock.acquire()
-    try:
-        say(f"\n=== [{n}/{total}] {name} — started ===")
-        result = run_one(rec, run_dir, kb_dir, args)
-    finally:
-        lock.release()
+    print(f"\n=== [{n}/{total}] {name} — started ===", flush=True)
+    result = run_one(rec, run_dir, kb_dir, args)
 
     if result["error"]:
-        say(f"    [{n}/{total}] {name}: FAILED ({result['seconds']}s): {result['error']}")
+        print(f"    [{n}/{total}] {name}: FAILED ({result['seconds']}s): {result['error']}",
+              flush=True)
     else:
         order = (
             f"{result['interactions']} interactions"
             if result["interactions"] is not None
             else "no order"
         )
-        say(f"    [{n}/{total}] {name}: {result['badge']} — {result['roles']} roles, {order} "
-            f"({result['seconds']}s) -> {run_dir}")
+        print(f"    [{n}/{total}] {name}: {result['badge']} — {result['roles']} roles, {order} "
+              f"({result['seconds']}s) -> {run_dir}", flush=True)
     return result
 
 
@@ -347,14 +241,7 @@ def run(args) -> int:
     """Run a batch. ``args`` carries ``secpat recover``'s batch options by name:
     ``manifest_path``, ``batch_path``, ``provider``, ``model``, ``kb_root``,
     ``rebuild_kb``, ``no_order``, ``disable_tool``, ``system_prompt_file``,
-    ``only``, ``skip``, ``parallel`` (None: from ``SECPAT_PARALLEL``), ``sleep``,
-    ``dry_run``."""
-    if args.parallel is None:
-        args.parallel = parallel_for(args.provider)
-    if args.parallel < 1:
-        print("error: --parallel must be at least 1", file=sys.stderr)
-        return 2
-
+    ``only``, ``skip``, ``sleep``, ``dry_run``."""
     if args.system_prompt_file and not Path(args.system_prompt_file).is_file():
         print(f"error: system prompt file not found: {args.system_prompt_file}",
               file=sys.stderr)
@@ -393,7 +280,6 @@ def run(args) -> int:
         print(f"Stage 3      : {'skipped' if args.no_order else 'interaction order'}")
         print(f"Agent tools  : {tools_line(args.disable_tool)}")
         print(f"Prompt       : {args.system_prompt_file or 'built-in (prompt.SYSTEM)'}")
-        print(f"Parallel     : {args.parallel} run(s) at once")
         print(f"Records      : {len(records)}\n")
         for n, rec in enumerate(records, 1):
             print(f"  {n}. {slug(rec)}")
@@ -408,27 +294,12 @@ def run(args) -> int:
         print(f"Prompt:   {args.system_prompt_file or 'built-in (prompt.SYSTEM)'}\n")
 
     kb_root = Path(args.kb_root).absolute() if args.kb_root else ROOT / ".kb-batch"
-    kb_locks = KBLocks()
     total = len(records)
-    concurrent = args.parallel > 1
-
-    def task(numbered: tuple[int, dict], stagger: Stagger) -> dict:
-        n, rec = numbered
-        return run_record(n, total, rec, batch_dir, kb_root, args, kb_locks, stagger)
-
-    if concurrent:
-        width = min(args.parallel, total)
-        stagger = Stagger(args.sleep)
-        say(f"Running {total} record(s), {width} in flight on {args.provider}.")
-        with ThreadPoolExecutor(max_workers=width) as pool:
-            # `map` keeps manifest order in the results, whatever order they finish in.
-            results = list(pool.map(lambda nr: task(nr, stagger), enumerate(records, 1)))
-    else:
-        results = []
-        for numbered in enumerate(records, 1):
-            results.append(task(numbered, Stagger(0)))
-            if args.sleep and numbered[0] < total:
-                time.sleep(args.sleep)
+    results = []
+    for n, rec in enumerate(records, 1):
+        results.append(run_record(n, total, rec, batch_dir, kb_root, args))
+        if args.sleep and n < total:
+            time.sleep(args.sleep)
 
     failed = sum(1 for r in results if r["error"])
     print(f"\nDone: {len(results) - failed} ok, {failed} failed -> {batch_dir}")

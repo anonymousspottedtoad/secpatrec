@@ -22,7 +22,7 @@ Below is the pattern, as raw JSON with four fields:
 def load_pattern(path: Path) -> str:
     """Load a pattern file as the pattern content of the agent's first message.
 
-    The pattern file itself is passed through verbatim — the crawler's
+    The pattern file itself is passed through verbatim — a pattern's
     ``04_pattern.json`` reaches the agent as raw JSON, and a raw ``.mmd``/``.md``
     classDiagram likewise unchanged. Nothing is reformatted; the only addition is
     ``_INTRO`` above it, naming the JSON's fields where that JSON appears.

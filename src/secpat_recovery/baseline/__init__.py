@@ -23,7 +23,7 @@ written out as the shape of the JSON object to return. The model answers in
 plain text through `LLMProvider.response`, and `parse_answer` reads the JSON back
 out. No tool is declared and no provider-specific structured-output parameter is
 set — the baseline is then the simplest thing the study can compare against, and
-it is the *same* simplest thing on every provider (Anthropic, OpenAI and the
+it is the *same* simplest thing on every provider (OpenAI, Muse and the
 self-hosted runtimes each constrain output differently, or not at all).
 
 The field wording matches the agent's `submit_mapping` so both pipelines are

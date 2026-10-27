@@ -1,24 +1,18 @@
 """GLM on its own Modal endpoint — `--provider glm`.
 
-A copy of `self_hosted.py` with this model's endpoint as `DEFAULT_BASE_URL`, so
-each self-hosted model keeps its own server; auth (`MODAL_KEY`/`MODAL_SECRET`),
-the request shape and the overrides below are the same. The rest of this
-docstring is `self_hosted.py`'s:
+DeepSeek and GLM each have their own copy of this module, holding their own
+endpoint; auth (`MODAL_KEY`/`MODAL_SECRET`), the request shape and the overrides
+below are the same. The serving runtime (a Modal-hosted vLLM server in the
+paper's runs; locally Ollama, llama.cpp's `llama-server`, vLLM, LM Studio)
+exposes an OpenAI-compatible `/v1/chat/completions` endpoint, tool calls
+included, so this is not a new wire protocol, only a different `base_url`
+(`LLM_BASE_URL`). The provider subclasses `OpenAIProvider` and inherits the
+Anthropic↔OpenAI message/tool translation unchanged.
 
-`--provider qwen` / `devstral` / `gpt-oss` each name the *model* being studied,
-which is what a model-comparison run is actually varying. They share one
-implementation: the serving runtime (a Modal-hosted vLLM server by default;
-locally Ollama, llama.cpp's `llama-server`, vLLM, LM Studio) exposes an
-OpenAI-compatible `/v1/chat/completions` endpoint, tool calls included, so this
-is not a new wire protocol, only a different `base_url`. `SelfHostedProvider`
-subclasses `OpenAIProvider` and inherits the Anthropic↔OpenAI message/tool
-translation unchanged.
-
-`SELF_HOSTED_MODELS` (in `llm/__init__.py`) maps each provider name to its
-default model tag; `--model` overrides it (e.g. `--provider qwen --model
-qwen3-coder:30b` against a local Ollama), and `model_id` — recorded in every
-transcript header — always names the concrete tag that ran. The tag must match
-what the server reports at `/v1/models`.
+`SELF_HOSTED_MODELS` (in `llm/__init__.py`) holds the model's default tag;
+`--model` overrides it, and `model_id` — recorded in every transcript header —
+always names the concrete tag that ran. The tag must match what the server
+reports at `/v1/models`.
 
 What genuinely differs from the hosted OpenAI API, and is handled here:
 
@@ -34,13 +28,11 @@ What genuinely differs from the hosted OpenAI API, and is handled here:
   addition; local servers generally only implement the original.
 * **JSON mode is optional.** `response_format={"type": "json_object"}` is
   unsupported by some builds, so the first refusal downgrades the call to a
-  plain completion for the rest of the run rather than failing the crawler.
-* **Reasoning models burn the step budget thinking.** Qwen3 thinks by default,
-  and on a 14B local model that is ~19s of hidden reasoning tokens before every
-  tool call — on top of a `thought` the schema already requires, so the loop
-  pays for its reasoning twice. `reasoning_effort=` is forwarded when set
-  (`LLM_REASONING_EFFORT=none` turns Qwen3's thinking off; Ollama ignores the
-  native `think` field on this endpoint).
+  plain completion for the rest of the run rather than failing it.
+* **Reasoning models burn the step budget thinking.** Hidden reasoning before
+  every tool call comes on top of a `thought` the schema already requires, so
+  the loop pays for its reasoning twice. `reasoning_effort=` is forwarded when
+  set (Ollama ignores the native `think` field on this endpoint).
 * **Context length must be raised explicitly.** Ollama truncates to 4096 tokens
   by default; a 50-step ReAct transcript blows past that long before
   `submit_mapping`, and truncation is silent — the run just degrades. Set

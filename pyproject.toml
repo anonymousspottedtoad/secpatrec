@@ -7,20 +7,23 @@ name = "secpat-recovery"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    # `secpat pack --measure` counts tokens with Anthropic's count_tokens endpoint.
     "anthropic>=0.30.0",
     "openai>=1.30.0",
     "click>=8.1.0",
     # The interaction-order detector (stage 3) and the drift scorer, each its own
-    # package so every consumer computes the same numbers. Scoring brings
-    # tree-sitter and its five grammars with it — do not pin those here as well.
-    "secpat-interaction-order==0.1.0",
-    "secpat-scoring==0.23.0",
+    # package so every consumer computes the same numbers, installed from their
+    # release tags. secpat-scoring pins secpat-interaction-order by name; this
+    # URL is what satisfies it. Scoring brings tree-sitter and its five grammars
+    # with it — do not pin those here as well.
+    "secpat-interaction-order @ git+https://github.com/anonymousspottedtoad/secpat_interaction_recovery.git@v0.1.0",
+    "secpat-scoring @ git+https://github.com/anonymousspottedtoad/secpat_evaluation_metrics.git@v0.23.0",
     "sentence-transformers>=5.0.0",
     "numpy>=1.26",
     "regex>=2024.0",
     "chromadb>=0.6.0",
     "python-dotenv>=1.0.0",
-    # o200k_base: the baseline's fit guard counts non-Claude prompts with it.
+    # o200k_base: the baseline's fit guard counts every prompt with it.
     "tiktoken>=0.13.0",
 ]
 
@@ -29,6 +32,10 @@ dev = ["ruff>=0.4"]
 
 [project.scripts]
 secpat = "secpat_recovery.cli:cli"
+
+[tool.hatch.metadata]
+# The two sibling packages above are git URLs, which hatchling refuses unless told.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/secpat_recovery"]
