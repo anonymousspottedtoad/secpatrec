@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "secpat-recovery"
 version = "0.1.0"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     # `secpat pack --measure` counts tokens with Anthropic's count_tokens endpoint.
     "anthropic>=0.30.0",

@@ -520,3 +520,7 @@ building any that are missing there. Otherwise `secpat` uses local Joern unless 
 Joern query service; locally, it builds a missing CPG into `JOERN_CPG_ROOT`
 (default `~/.cache/secpat/joern_cpg`). See the `secpat-interaction-order`
 repository for details.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
