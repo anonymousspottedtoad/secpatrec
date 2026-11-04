@@ -27,7 +27,40 @@ It works on Java and Python codebases. A run has three stages:
 The interaction walk (`secpat-interaction-order`) and the scoring
 (`secpat-scoring`) are separate packages that install with secpatrec. The dataset of the
 paper (100 records: 5 patterns × 10 repositories × 2 languages, with ground
-truth, prebuilt CPGs and every experiment's outputs) is on Hugging Face.
+truth, prebuilt CPGs and every experiment's outputs) is on Hugging Face, in the
+bucket [`AnonymousSpottedToad/securityPatternsRecovery`](https://huggingface.co/buckets/AnonymousSpottedToad/securityPatternsRecovery).
+
+## The paper
+
+secpatrec is the code of the paper *A Hybrid Approach for Automated Security
+Pattern Recovery*: SecPatRec, the approach of its Section III-B, and every
+experiment of its evaluation (Section V, RQ1–RQ4). The paper's appendix is at
+<https://doi.org/10.5281/zenodo.23664769>.
+
+The paper releases five artifacts, listed in its Appendix G:
+
+| Artifact | What it holds | In the paper |
+| -------- | ------------- | ------------ |
+| [secpatrec](https://github.com/anonymousspottedtoad/secpatrec) (this repository) | the role detection and mapping agent, the one-shot baseline, the two ablation settings, and the `secpat` command that runs and scores them | Sections III-B and V |
+| [secpat_interaction_recovery](https://github.com/anonymousspottedtoad/secpat_interaction_recovery) | the walk of the Joern CPG that recovers the interaction sequence; installs with secpatrec | Section III-B2, Appendix C |
+| [secpat_evaluation_metrics](https://github.com/anonymousspottedtoad/secpat_evaluation_metrics) | RDA, MLS and IRC; installs with secpatrec | Section IV-C, Appendix A-D |
+| [the dataset](https://huggingface.co/buckets/AnonymousSpottedToad/securityPatternsRecovery) | the groundtruth, the codebases and their CPGs, the five patterns, and every experiment's outputs and scores | Sections IV-B and V, Appendices A-A and D |
+| [secpat_annotation_portal](https://github.com/anonymousspottedtoad/secpat_annotation_portal) | the web interface the annotators used | Appendix D-B |
+
+The code and the dataset name some of the paper's terms differently:
+
+| Paper | Here |
+| ----- | ---- |
+| RDA, MLS, IRC | Level 1, Level 2, Level 3; `evaluation.json` also gives `drift = 1 - score` |
+| recovery instance | record: one pattern in one repository |
+| the specification *P* of a pattern | the pattern's `04_pattern.json` |
+| P1, P2, P3, P4, P5 | `authentication_pwd`, `verifiable_token_based_authentication`, `obscure_token_based_access_control`, `session_based_access_control`, `limit_request_rate` |
+| GPT-6.1, Muse Spark, DeepSeek, GLM | `gpt-6.1-sol`, `muse-spark-1.3-contributor`, `deepseek-v4-flash-0731`, `glm-5.3-flash` |
+| semantic search, lexical (keyword) search | the agent's `search` and `grep` tools |
+| SecPatRec, the one-shot baseline, and RQ4's settings without lexical or semantic search | the experiments `pipeline`, `baseline`, `ablation_no_grep`, `ablation_no_search` |
+
+[What reproduces which result](#what-reproduces-which-result) maps the
+experiments below to the paper's tables and figures.
 
 ## Prerequisites
 
@@ -169,10 +202,11 @@ Install the Hugging Face command-line tool:
 pip install --upgrade huggingface_hub
 ```
 
-Download the dataset (replace `HF_REPO_ID` with the dataset's id on Hugging Face):
+Download the dataset, which is the Hugging Face bucket
+[`AnonymousSpottedToad/securityPatternsRecovery`](https://huggingface.co/buckets/AnonymousSpottedToad/securityPatternsRecovery):
 
 ```bash
-hf download HF_REPO_ID --repo-type dataset --local-dir dataset
+hf buckets sync hf://buckets/AnonymousSpottedToad/securityPatternsRecovery dataset
 ```
 
 Check it arrived:
@@ -182,8 +216,8 @@ ls dataset
 ```
 
 `ls` should show `codebase/`, `experiment_outputs/`, `ground_truth/`,
-`security_patterns/`, the two manifests and the dataset's own `README.md`, which
-describes every file.
+`security_patterns/`, the two manifests, `Recovery_Conversation_Session.txt`,
+`LICENSE` and the dataset's own `README.md`, which describes every file.
 
 ## Run experiments
 
@@ -269,6 +303,24 @@ Each endpoint must serve its model under the name `secpat` asks for:
 **The experiments below use GPT** (`--models gpt-6.1-sol`) in every command. To
 run them with other models, give `--models` once for each model, as above — for
 example, add `--models muse-spark-1.3-contributor` to any of the commands.
+
+### Model settings
+
+Each model's request settings are fixed in the code (`src/secpat_recovery/llm/`),
+not in `.env`:
+
+| `--models` | Reasoning effort | Sampling | Output cap per agent step |
+| ---------- | ---------------- | -------- | ------------------------- |
+| `gpt-6.1-sol` | medium | the API's defaults | 8,192 tokens |
+| `muse-spark-1.3-contributor` | low | temperature 1, top_p 1 | 32,000 tokens |
+| `deepseek-v4-flash-0731` | `LLM_REASONING_EFFORT` if set (it is empty in `.env.example`), otherwise the endpoint's default | the endpoint's defaults | 8,192 tokens |
+| `glm-5.3-flash` | low | the endpoint's defaults | 8,192 tokens |
+
+- The agent has at most 50 steps to submit its mapping (`MAX_STEPS` in
+  `src/secpat_recovery/recovery_agent/agent.py`).
+- Semantic search embeds the code with `BAAI/bge-small-en-v1.5`.
+- The baseline makes one call, with an output cap of 32,000 tokens, and only for
+  a prompt within 900,000 tokens of the `o200k_base` tokenizer.
 
 ### Output
 
@@ -438,6 +490,28 @@ them.
 | `baseline` | one-shot: the whole repository packed into one prompt, one call, no agent |
 | `ablation_no_grep` | the pipeline without the `grep` tool (keyword search) |
 | `ablation_no_search` | the pipeline without the `search` tool (semantic search) |
+
+### What reproduces which result
+
+Experiments 1 and 2 recompute, without calling any model, the score of every
+record: the scores stored in each `evaluation.json` of the dataset. The paper's
+results are built from these scores:
+
+| In the paper | Result | Built from |
+| ------------ | ------ | ---------- |
+| Table III | the groundtruth: 500 roles (334 present, 75 external, 91 missing) and 280 interactions | `dataset/ground_truth/`; the dataset's README says how the roles are counted |
+| RQ1: Fig. 35, Fig. 4, Table VIII | RDA, MLS and IRC per LLM and language (over the four LLMs: 0.84, 0.84 and 0.66), the presence statuses against the groundtruth, and the instances with the highest MLS and with MLS = 1 | the `pipeline` scores |
+| RQ3: Fig. 37, Table IX, Fig. 5, Fig. 40 | SecPatRec against the one-shot baseline per pattern, over the 84 instances both can run and by codebase size; IRC by MLS band | the `pipeline` and `baseline` scores |
+| RQ4: the RDA, MLS and IRC columns of Table X | each setting without one search tool, against the full pipeline | the `pipeline`, `ablation_no_grep` and `ablation_no_search` scores |
+
+The scripts that turn these scores into the paper's tables and figures are not
+included. The dataset holds no token counts, steps, costs or memory use, so the
+artifacts do not reproduce RQ2 (Fig. 36), the cost side of RQ3 (Figs. 38 and
+39), or the token, step and memory columns of Table X. Experiment 3 measures them
+again: each new `recovery.json` records the provider's token counts, with the
+agent's steps under `run_stats` and the baseline's single call under `baseline`.
+Model outputs vary from run to run, so its scores come out near the paper's, not
+equal to them.
 
 ### Options
 
