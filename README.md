@@ -115,8 +115,9 @@ Update pip:
 pip install --upgrade pip
 ```
 
-Install secpatrec. This also installs `secpat-interaction-order` and
-`secpat-scoring` from their GitHub release tags (listed in `pyproject.toml`):
+Install secpatrec. This also installs `secpat-interaction-order` (version 0.2.0, with its
+own command of the same name) and `secpat-scoring` from their GitHub release tags (listed in
+`pyproject.toml`):
 
 ```bash
 pip install -e .
@@ -353,6 +354,53 @@ The results are written to `output/` (the last line of the run names the report)
 - `output/evaluate/pipeline/gpt-6.1-sol/java/evaluation_<stamp>.html` (and
   `.json`) — the batch's own report, record by record, with each level's details.
 
+### Check the interaction recovery (one record, about 40 seconds)
+
+The interaction recovery derives the order in which a recovery's roles interact, from its role
+mapping, on the repository's CPG. On one record, with the recovery GPT produced for the paper:
+
+```bash
+secpat interaction --models gpt-6.1-sol \
+    --manifests dataset/manifest_java_full_20261005.json \
+    --groundtruth-path dataset/ground_truth \
+    --cpg-path dataset/codebase/cpg \
+    --repos-path dataset/codebase/repos \
+    --patterns-path dataset/security_patterns \
+    --recoveries-path dataset/experiment_outputs \
+    --repo ErtanSidar_turkcell-common --pattern verifiable_token_based_authentication
+```
+
+```text
+[1/1] verifiable_token_based_authentication__ErtanSidar_turkcell-common: 4 interactions
+...
+    level1=1.000 level2=1.000 level3=1.000
+```
+
+The derived order is the `interaction_order` in
+`output/interaction/pipeline/gpt-6.1-sol/java/verifiable_token_based_authentication__ErtanSidar_turkcell-common/recovery.json`,
+and Level 3 is the paper's IRC. Any other record works the same way: the manifests list each
+record's repository and pattern (for a Python record, use
+`dataset/manifest_python_full_20261005.json`).
+
+The interaction recovery also runs on its own, as the command `secpat-interaction-order`. This
+derives the same record's ground-truth order and compares it with the one stored in the dataset
+(about 13 seconds):
+
+```bash
+secpat-interaction-order dataset --dataset dataset \
+    --repo ErtanSidar_turkcell-common --pattern verifiable_token_based_authentication
+```
+
+```text
+[1/1] verifiable_token_based_authentication__ErtanSidar_turkcell-common: 4 interaction(s), same as the dataset
+1 of 1 record(s) give the same interaction order as the dataset (12 s).
+```
+
+Without `--repo` and `--pattern`, it checks all 100 records (about 23 minutes).
+`secpat-interaction-order run` takes a role mapping of your own; the
+[secpat_interaction_recovery README](https://github.com/anonymousspottedtoad/secpat_interaction_recovery#your-own-role-mapping)
+shows how.
+
 ### Experiment 1: evaluation — score the paper's recoveries again
 
 Takes each recovery the paper's models produced (stored in
@@ -398,7 +446,7 @@ recovery's role mapping on the repository's CPG and saves the interaction order
 it finds in the recovery's `recovery.json`. Then it scores the recovery as in
 Experiment 1.
 
-The pipeline experiment with GPT, both languages (100 records, about 25 minutes):
+The pipeline experiment with GPT, both languages (100 records, about an hour):
 
 ```bash
 secpat interaction --models gpt-6.1-sol \
@@ -411,7 +459,8 @@ secpat interaction --models gpt-6.1-sol \
     --recoveries-path dataset/experiment_outputs
 ```
 
-Every experiment with GPT — pipeline, baseline and both ablations (about 1½ hours):
+Every experiment with GPT — pipeline, baseline and both ablations (longer: the two ablations
+are traversed too, and the baseline is only scored):
 
 ```bash
 secpat interaction --models gpt-6.1-sol \
@@ -427,6 +476,8 @@ secpat interaction --models gpt-6.1-sol \
 
 The scores are the same as in Experiment 1. The derived orders are in
 `output/interaction/<experiment>/<model>/<language>/<pattern>__<repo>/recovery.json`.
+`--repo` and `--pattern` run one record, as in
+[Check the interaction recovery](#check-the-interaction-recovery-one-record-about-40-seconds).
 The baseline keeps the order its model stated, so it is only scored.
 
 ### Experiment 3: run the full pipeline
