@@ -18,8 +18,8 @@ dependencies = [
     # release tags. secpat-scoring pins secpat-interaction-order by name; this
     # URL is what satisfies it. Scoring brings tree-sitter and its five grammars
     # with it — do not pin those here as well.
-    "secpat-interaction-order @ git+https://github.com/anonymousspottedtoad/secpat_interaction_recovery.git@v0.1.0",
-    "secpat-scoring @ git+https://github.com/anonymousspottedtoad/secpat_evaluation_metrics.git@v0.23.0",
+    "secpat-interaction-order @ git+https://github.com/anonymousspottedtoad/secpat_interaction_recovery.git@v0.2.0",
+    "secpat-scoring @ git+https://github.com/anonymousspottedtoad/secpat_evaluation_metrics.git@v0.23.1",
     "sentence-transformers>=5.0.0",
     "numpy>=1.26",
     "regex>=2024.0",
